@@ -1,27 +1,17 @@
-MESUTRONIC — NOTES DE FRAIS IPHONE
-===================================
+NOTE DE FRAIS IPHONE — V3
 
-Fichiers à déposer ensemble à la racine d'un dépôt GitHub Pages :
-- index.html
-- modele-note-frais.xlsx
-- manifest.webmanifest
-- service-worker.js
-- icon-192.png
-- icon-512.png
+Déploiement GitHub Pages :
+1. Placez tous les fichiers de ce dossier à la racine du repository.
+2. Vérifiez notamment que index.html et modele-note-frais.xlsx sont au même niveau.
+3. Activez GitHub Pages sur la branche principale / racine.
+4. Sur iPhone, ouvrez l’URL dans Safari puis Partager > Sur l’écran d’accueil.
 
-UTILISATION
-1. Ouvrir l'URL GitHub Pages sur l'iPhone avec Safari.
-2. Partager > Sur l'écran d'accueil.
-3. Ouvrir l'app depuis l'icône.
-4. Dans Réglages, saisir une seule fois la clé API Anthropic.
-5. Photographier les justificatifs au fil du mois.
-6. Vérifier/corriger les lignes proposées.
-7. "Exporter dossier complet" génère un ZIP contenant :
-   - la note de frais Excel au format MESUTRONIC ;
-   - les photos numérotées 01, 02, 03... dans le même ordre que les lignes.
+Utilisation :
+- Photographiez un justificatif.
+- Vérifiez/corrigez la date, le montant, le motif et la catégorie.
+- Appuyez sur « Exporter Excel ».
+- L’application génère directement NoteDeFrais_MoisAnnee.xlsx à partir du modèle MESUTRONIC.
 
-IMPORTANT
-- Les photos et les données du mois sont conservées localement sur l'appareil via IndexedDB.
-- La clé API reste dans le stockage local du navigateur ; elle n'est pas écrite dans GitHub.
-- La lecture IA nécessite une connexion internet.
-- Le modèle accepte jusqu'à 30 justificatifs par mois.
+Important après passage de V2 à V3 :
+- Rechargez la page Safari une fois après la mise à jour GitHub.
+- Si l’ancienne version reste affichée, fermez puis rouvrez l’app installée sur l’écran d’accueil.
