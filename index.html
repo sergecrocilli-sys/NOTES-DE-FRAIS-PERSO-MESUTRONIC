@@ -11,6 +11,7 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Note de frais — MESUTRONIC</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
 :root{--paper:#EEF1F6;--card:#fff;--ink:#16233B;--soft:#526079;--line:#D7DEE7;--gold:#B8892B;--goldsoft:#F5E9CF;--ok:#2F6F4E;--okbg:#E6F1EB;--err:#B23A3A;--errbg:#FBEAEA;--shadow:0 8px 28px rgba(22,35,59,.08)}
 *{box-sizing:border-box}html,body{margin:0;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}body{padding-bottom:calc(105px + env(safe-area-inset-bottom))}
@@ -29,12 +30,9 @@ main{max-width:820px;margin:auto;padding:16px}section{background:var(--card);bor
 </header>
 <main>
 <section>
-  <div class="api-head"><h2 style="margin:0"><span class="num">0</span> Lecture automatique</h2><button id="toggle-api" class="small">Réglages</button></div>
-  <div class="api-body" id="api-body">
-    <div class="field"><label>Clé API Anthropic</label><input type="password" id="api-key" placeholder="sk-ant-..."></div>
-    <div class="hint">La clé est enregistrée uniquement dans le stockage local de cet appareil. Elle n'est jamais intégrée aux fichiers GitHub.</div>
-    <div id="key-status" class="hint" style="margin-top:6px"></div>
-  </div>
+  <h2><span class="num">0</span> Lecture locale des facturettes</h2>
+  <div class="banner okbanner" style="margin:0">🔒 Aucune clé API. La photo sert uniquement à la lecture OCR dans Safari et n’est jamais enregistrée dans l’application. Après une lecture réussie, l’image est libérée de la mémoire.</div>
+  <div class="hint" style="margin-top:9px">La première lecture peut nécessiter une connexion Internet pour charger le moteur OCR français. Les champs restent toujours modifiables avant l’export Excel.</div>
 </section>
 <section>
   <h2><span class="num">1</span> Mois</h2>
@@ -61,7 +59,7 @@ main{max-width:820px;margin:auto;padding:16px}section{background:var(--card);bor
 </section>
 </main>
 <div class="footer">
-  <button id="analyze-all" class="gold">Analyser les photos</button>
+  <button id="analyze-all" class="gold">Lire les facturettes</button>
   <button id="export-excel" class="primary">Exporter Excel</button>
 </div>
 <script>
@@ -71,45 +69,72 @@ const CATEGORIES=[
  {label:'Carburant',col:'F'},{label:'Entretien',col:'G'},{label:'Infor./Tél.',col:'H'},{label:'Divers',col:'I'},
  {label:'Péage',col:'J'},{label:'Voyage',col:'K'},{label:'Réception',col:'L'},{label:'Parking',col:'M'}
 ];
-const DB_NAME='mesutronic_notes_frais_v2', STORE='receipts';
-let receipts=[]; let seq=0; let db=null;
+const NATURES=[
+ {value:'diesel',label:'Plein diesel',cat:'Carburant'},
+ {value:'adblue',label:'AdBlue',cat:'Entretien'},
+ {value:'repas_midi',label:'Repas du midi',cat:'Voyage'},
+ {value:'repas_soir',label:'Repas du soir',cat:'Voyage'},
+ {value:'soiree_etape',label:'Soirée étape',cat:'Voyage'},
+ {value:'hotel',label:'Hôtel / chambre',cat:'Voyage'},
+ {value:'peage',label:'Péage',cat:'Péage'},
+ {value:'parking',label:'Parking',cat:'Parking'},
+ {value:'informatique',label:'Informatique / téléphone',cat:'Infor./Tél.'},
+ {value:'entretien',label:'Entretien véhicule',cat:'Entretien'},
+ {value:'reception',label:'Réception / repas invité',cat:'Réception'},
+ {value:'autre',label:'Autre',cat:'Divers'}
+];
+let receipts=[]; let seq=0; let ocrWorkerPromise=null; let currentOcrReceipt=null;
 const $=id=>document.getElementById(id);
 
-function openDb(){return new Promise((resolve,reject)=>{const req=indexedDB.open(DB_NAME,1);req.onupgradeneeded=()=>{const d=req.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});};req.onsuccess=()=>{db=req.result;resolve(db)};req.onerror=()=>reject(req.error);});}
-function dbPut(r){if(!db)return Promise.resolve();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');const st=tx.objectStore(STORE);st.put({...r,previewUrl:undefined});tx.oncomplete=res;tx.onerror=()=>rej(tx.error);});}
-function dbDelete(id){if(!db)return Promise.resolve();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).delete(id);tx.oncomplete=res;tx.onerror=()=>rej(tx.error);});}
-function dbClear(){if(!db)return Promise.resolve();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).clear();tx.oncomplete=res;tx.onerror=()=>rej(tx.error);});}
-function dbLoad(){if(!db)return Promise.resolve([]);return new Promise((res,rej)=>{const req=db.transaction(STORE,'readonly').objectStore(STORE).getAll();req.onsuccess=()=>res(req.result||[]);req.onerror=()=>rej(req.error);});}
-
-function saveMeta(){localStorage.setItem('ndf_meta',JSON.stringify({nom:$('meta-nom').value,vehicule:$('meta-vehicule').value,mois:$('meta-mois').value,annee:$('meta-annee').value}));}
-function loadMeta(){try{const m=JSON.parse(localStorage.getItem('ndf_meta')||'{}');if(m.nom)$('meta-nom').value=m.nom;if(m.vehicule)$('meta-vehicule').value=m.vehicule;if(m.mois)$('meta-mois').value=m.mois;if(m.annee)$('meta-annee').value=m.annee;}catch(e){}}
+function saveMeta(){localStorage.setItem('ndf_meta_v4',JSON.stringify({nom:$('meta-nom').value,vehicule:$('meta-vehicule').value,mois:$('meta-mois').value,annee:$('meta-annee').value}));}
+function loadMeta(){try{const m=JSON.parse(localStorage.getItem('ndf_meta_v4')||'{}');if(m.nom)$('meta-nom').value=m.nom;if(m.vehicule)$('meta-vehicule').value=m.vehicule;if(m.mois)$('meta-mois').value=m.mois;if(m.annee)$('meta-annee').value=m.annee;}catch(e){}}
 ['meta-nom','meta-vehicule','meta-mois','meta-annee'].forEach(id=>$(id).addEventListener('change',saveMeta));
-
-const api=$('api-key'); api.value=localStorage.getItem('anthropic_api_key')||'';
-function keyStatus(){$('key-status').textContent=api.value.trim()?'✓ Clé enregistrée sur cet iPhone.':'Aucune clé : la saisie manuelle reste possible.';}
-api.addEventListener('change',()=>{localStorage.setItem('anthropic_api_key',api.value.trim());keyStatus();}); keyStatus();
-$('toggle-api').onclick=()=>$('api-body').classList.toggle('open');
 
 $('camera-input').addEventListener('change',e=>{addFiles(e.target.files);e.target.value='';});
 $('gallery-input').addEventListener('change',e=>{addFiles(e.target.files);e.target.value='';});
 $('analyze-all').onclick=analyzeAll; $('export-excel').onclick=exportExcel;
-$('reset-month').onclick=async()=>{if(!confirm('Supprimer tous les justificatifs enregistrés pour ce mois ?'))return;receipts.forEach(r=>r.previewUrl&&URL.revokeObjectURL(r.previewUrl));receipts=[];seq=0;await dbClear();render();};
+$('reset-month').onclick=()=>{if(!confirm('Supprimer toutes les lignes saisies pour ce mois ?'))return;receipts.forEach(releasePhoto);receipts=[];seq=0;render();};
 
-async function addFiles(files){for(const file of Array.from(files)){if(receipts.length>=MAX_RECEIPTS){alert('Le modèle accepte 30 justificatifs maximum.');break;}const id=++seq;const r={id,file,previewUrl:URL.createObjectURL(file),status:'pending',date:'',lieu:'',montant:'',categorie:'Voyage',confiance:'',error:''};receipts.push(r);await dbPut(r);}render(); if(api.value.trim())analyzeAll();}
-function fileToBase64(file){return new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(fr.result.split(',')[1]);fr.onerror=rej;fr.readAsDataURL(file);});}
-function isoWeek(dateStr){if(!dateStr)return'';const d=new Date(dateStr+'T12:00:00');const target=new Date(d.valueOf());const dayNr=(d.getDay()+6)%7;target.setDate(target.getDate()-dayNr+3);const firstThursday=new Date(target.getFullYear(),0,4);const firstDayNr=(firstThursday.getDay()+6)%7;firstThursday.setDate(firstThursday.getDate()-firstDayNr+3);return 1+Math.round((target-firstThursday)/604800000);}
+function releasePhoto(r){if(r.previewUrl){URL.revokeObjectURL(r.previewUrl);r.previewUrl='';}r.file=null;}
+async function addFiles(files){for(const file of Array.from(files)){if(receipts.length>=MAX_RECEIPTS){alert('Le modèle accepte 30 justificatifs maximum.');break;}const id=++seq;receipts.push({id,file,previewUrl:URL.createObjectURL(file),status:'pending',date:'',lieu:'',montant:'',categorie:'Divers',nature:'autre',confiance:'',error:'',ocrText:'',etablissement:''});}render();await analyzeAll();}
 
-async function analyzeAll(){const todo=receipts.filter(r=>r.status==='pending'||r.status==='error');if(!todo.length)return;for(const r of todo)await analyzeReceipt(r);}
-async function analyzeReceipt(r){const key=api.value.trim();if(!key){r.status='error';r.error='Ajoutez la clé API dans Réglages, ou remplissez cette ligne manuellement.';render();return;}r.status='analyzing';r.error='';render();try{const b64=await fileToBase64(r.file);let media=r.file.type||'image/jpeg';if(!['image/jpeg','image/png','image/gif','image/webp'].includes(media))throw new Error('Format image non pris en charge par la lecture IA');const prompt=`Tu lis un justificatif de frais professionnel français. Retourne UNIQUEMENT un objet JSON valide, sans markdown :\n{\n"date":"JJ/MM/AAAA ou null",\n"montant":nombre ou null,\n"categorie":"Carburant|Entretien|Infor./Tél.|Divers|Péage|Voyage|Réception|Parking",\n"nature":"diesel|adblue|repas_midi|repas_soir|soiree_etape|hotel|peage|parking|informatique|entretien|autre",\n"etablissement":"nom court ou vide",\n"confiance":"haute|moyenne|basse"\n}\nRègles : diesel => Carburant. AdBlue => Entretien. Restaurant/repas/hôtel/soirée étape => Voyage. Péage => Péage. Parking => Parking. Informatique/téléphone => Infor./Tél. Lis le montant TTC total. Pour un hôtel, distingue si les mots « soirée étape » sont visibles. N'invente jamais une information illisible.`;
-const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:450,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:media,data:b64}},{type:'text',text:prompt}]}]})});
-if(!resp.ok){const txt=await resp.text();throw new Error('API '+resp.status+' '+txt.slice(0,160));}const data=await resp.json();const block=(data.content||[]).find(x=>x.type==='text');if(!block)throw new Error('Réponse IA vide');const parsed=JSON.parse(block.text.trim().replace(/^```json\s*/i,'').replace(/^```/,'').replace(/```$/,'').trim());r.date=parsed.date?frDateToInput(parsed.date):'';r.montant=parsed.montant==null?'':Number(parsed.montant);r.categorie=CATEGORIES.some(c=>c.label===parsed.categorie)?parsed.categorie:'Divers';r.confiance=parsed.confiance||'';r.lieu=makeMotif(parsed,r.date);r.status='done';r.error='';await dbPut(r);}catch(e){console.error(e);r.status='error';r.error='Lecture impossible. Vérifiez la clé, le réseau et la netteté de la photo, puis relancez.';await dbPut(r);}render();}
-function makeMotif(p,date){const w=isoWeek(date);const prefix=w?`SE ${w} - `:'';switch(p.nature){case'diesel':return'plein diesel Focus Turnier REG M 2277 (TVA 80 %)';case'adblue':return'plein ad blue Focus Turnier REG M 2277 (TVA 80 %)';case'repas_midi':return prefix+'1x repas du midi';case'repas_soir':return prefix+'1x repas du soir';case'soiree_etape':return prefix+'1x soirée étape';case'hotel':return prefix+'1x chambre + petit déjeuner';case'peage':return p.etablissement?`Péage - ${p.etablissement}`:'Péage';case'parking':return p.etablissement?`Parking - ${p.etablissement}`:'Parking';default:return p.etablissement||'';}}
-function frDateToInput(s){const m=String(s).match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return'';let y=m[3];if(y.length===2)y='20'+y;return`${y.padStart(4,'0')}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;}
+function isoWeek(dateStr){if(!dateStr)return'';const d=new Date(dateStr+'T12:00:00');if(isNaN(d))return'';d.setHours(0,0,0,0);d.setDate(d.getDate()+3-(d.getDay()+6)%7);const w1=new Date(d.getFullYear(),0,4);return 1+Math.round(((d-w1)/86400000-3+(w1.getDay()+6)%7)/7);}
+function normalizeText(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[|]/g,'I').replace(/\s+/g,' ').trim();}
+function frDateToInput(s){const m=String(s).match(/(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);if(!m)return'';let y=m[3];if(y.length===2)y='20'+y;const d=Number(m[1]),mo=Number(m[2]),yy=Number(y);if(d<1||d>31||mo<1||mo>12||yy<2020||yy>2035)return'';return`${String(yy).padStart(4,'0')}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;}
+function extractDate(text){const matches=[...String(text).matchAll(/\b(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4})\b/g)];for(const m of matches){const d=frDateToInput(m[1]);if(d)return d;}return'';}
+function toAmount(s){if(!s)return null;const n=Number(String(s).replace(/\s/g,'').replace(',','.'));return Number.isFinite(n)&&n>0&&n<5000?n:null;}
+function extractAmount(text){const raw=String(text||'').replace(/€/g,' EUR ');const lines=raw.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);const priority=/(TOTAL\s*TTC|NET\s*A\s*PAYER|A\s*PAYER|MONTANT\s*TTC|TOTAL|CARTE\s*BANCAIRE)/i;let candidates=[];
+ for(const line of lines){const nums=[...line.matchAll(/(\d{1,4}(?:[ .]\d{3})*[,.]\d{2})/g)].map(m=>toAmount(m[1])).filter(x=>x!==null);if(!nums.length)continue;const score=priority.test(line)?100:0;for(const n of nums)candidates.push({n,score});}
+ if(!candidates.length){candidates=[...raw.matchAll(/(\d{1,4}[,.]\d{2})/g)].map(m=>({n:toAmount(m[1]),score:0})).filter(x=>x.n!==null);}
+ if(!candidates.length)return'';candidates.sort((a,b)=>(b.score-a.score)||(b.n-a.n));return candidates[0].n;}
+function extractTime(text){const m=String(text).match(/\b([01]?\d|2[0-3])[:hH]([0-5]\d)\b/);return m?Number(m[1]):null;}
+function extractMerchant(text){const lines=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(x=>x.length>=3);const banned=/(TICKET|FACTURE|TOTAL|TTC|TVA|CARTE|CB|MERCI|SIRET|DATE|HEURE|EURO|EUR|CLIENT|CAISSE)/i;return (lines.find(x=>/[A-Za-zÀ-ÿ]{3}/.test(x)&&!banned.test(x))||'').replace(/[^A-Za-zÀ-ÿ0-9 '&.\-]/g,'').slice(0,45);}
+function classifyReceipt(text){const t=normalizeText(text);const hour=extractTime(text);let nature='autre';
+ if(/SOIREE\s*ETAPE|ETAPE\s*SOIREE/.test(t)) nature='soiree_etape';
+ else if(/AD\s*BLUE|ADBLUE/.test(t)) nature='adblue';
+ else if(/DIESEL|GAZOLE|GASOIL|EXCELLIUM\s+DIESEL|B7\b/.test(t)) nature='diesel';
+ else if(/PEAGE|AUTOROUTE|VINCI\s*AUTOROUTES|APRR|AREA|SANEF|SAPN/.test(t)) nature='peage';
+ else if(/PARKING|STATIONNEMENT|INDIGO|EFFIA/.test(t)) nature='parking';
+ else if(/HOTEL|HÔTEL|CHAMBRE|NUITEE|NUITÉE/.test(t)) nature='hotel';
+ else if(/TELEPHONE|TÉLÉPHONE|INFORMATIQUE|ORDINATEUR|CARTOUCHE|BOULANGER|DARTY|FNAC/.test(t)) nature='informatique';
+ else if(/GARAGE|ENTRETIEN|REVISION|RÉVISION|VIDANGE|PNEU|REPARATION|RÉPARATION/.test(t)) nature='entretien';
+ else if(/RESTAURANT|BRASSERIE|BISTROT|REPAS|MENU|DEJEUNER|DÉJEUNER|CAFE|CAFÉ|PIZZA|GRILL/.test(t)) nature=(hour!==null&&hour>=17)?'repas_soir':'repas_midi';
+ return nature;}
+function categoryForNature(n){return (NATURES.find(x=>x.value===n)||NATURES[NATURES.length-1]).cat;}
+function makeMotif(nature,date,merchant=''){const w=isoWeek(date);const prefix=w?`SE ${w} - `:'';switch(nature){case'diesel':return'plein diesel Focus Turnier REG M 2277 (TVA 80 %)';case'adblue':return'plein ad blue Focus Turnier REG M 2277 (TVA 80 %)';case'repas_midi':return prefix+'1x repas du midi';case'repas_soir':return prefix+'1x repas du soir';case'soiree_etape':return prefix+'1x soirée étape';case'hotel':return prefix+'1x chambre + petit déjeuner';case'peage':return merchant?`Péage - ${merchant}`:'Péage';case'parking':return merchant?`Parking - ${merchant}`:'Parking';case'informatique':return merchant||'Informatique / téléphone';case'entretien':return merchant||'Entretien véhicule';case'reception':return prefix+'1x repas réception';default:return merchant||'';}}
+function confidenceLabel(ocrConf,date,amount,nature){let s=0;if(Number(ocrConf)>=70)s++;if(date)s++;if(amount!=='')s++;if(nature!=='autre')s++;return s>=4?'haute':s>=2?'moyenne':'basse';}
+
+async function preprocessImage(file){return new Promise((resolve,reject)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{try{const max=1800;const scale=Math.min(1,max/Math.max(img.width,img.height));const w=Math.max(1,Math.round(img.width*scale)),h=Math.max(1,Math.round(img.height*scale));const c=document.createElement('canvas');c.width=w;c.height=h;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,w,h);const im=ctx.getImageData(0,0,w,h);for(let i=0;i<im.data.length;i+=4){const g=0.299*im.data[i]+0.587*im.data[i+1]+0.114*im.data[i+2];const v=g<175?Math.max(0,g*0.72):Math.min(255,g*1.12);im.data[i]=im.data[i+1]=im.data[i+2]=v;}ctx.putImageData(im,0,0);URL.revokeObjectURL(url);resolve(c);}catch(e){URL.revokeObjectURL(url);reject(e);}};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Image illisible'));};img.src=url;});}
+async function getOcrWorker(){if(!window.Tesseract)throw new Error('Moteur OCR non chargé. Vérifiez la connexion Internet.');if(!ocrWorkerPromise){ocrWorkerPromise=Tesseract.createWorker('fra',1,{logger:m=>{if(currentOcrReceipt&&m.status==='recognizing text'){currentOcrReceipt.progress=Math.round((m.progress||0)*100);render();}}});}return ocrWorkerPromise;}
+async function analyzeAll(){const todo=receipts.filter(r=>(r.status==='pending'||r.status==='error')&&r.file);if(!todo.length)return;for(const r of todo)await analyzeReceipt(r);}
+async function analyzeReceipt(r){if(!r.file){r.status='error';r.error='La photo n’est plus en mémoire. Complétez la ligne manuellement ou reprenez une photo.';render();return;}r.status='analyzing';r.error='';r.progress=0;currentOcrReceipt=r;render();try{const worker=await getOcrWorker();const canvas=await preprocessImage(r.file);const ret=await worker.recognize(canvas);const text=ret.data.text||'';const nature=classifyReceipt(text);const date=extractDate(text);const amount=extractAmount(text);const merchant=extractMerchant(text);r.ocrText=text;r.date=date;r.montant=amount;r.nature=nature;r.categorie=categoryForNature(nature);r.etablissement=merchant;r.lieu=makeMotif(nature,date,merchant);r.confiance=confidenceLabel(ret.data.confidence,date,amount,nature);r.status='done';r.error='';releasePhoto(r);}catch(e){console.error('OCR',e);r.status='error';r.error='Lecture automatique incomplète. Vous pouvez remplir Date / Montant / Type manuellement ou reprendre la photo.';}finally{currentOcrReceipt=null;r.progress=0;render();}}
+
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function statusLabel(s){return{pending:'En attente',analyzing:'Lecture…',done:'Lu — à vérifier',error:'À corriger'}[s]||s;}
-function render(){const box=$('receipts');$('counter').textContent=`${receipts.length} / ${MAX_RECEIPTS}`;if(!receipts.length)box.innerHTML='<div class="empty">Aucun justificatif pour l\'instant.</div>';else box.innerHTML=receipts.map((r,i)=>`<div class="receipt"><div class="leftcol"><div class="stamp">${i+1}</div><img class="thumb" src="${r.previewUrl}"></div><div><div class="receipt-top"><span class="status ${r.status}">${statusLabel(r.status)}</span><button class="ghost small danger" onclick="removeReceipt(${r.id})">Supprimer</button></div>${r.error?`<div class="error-text">${esc(r.error)}</div>`:''}<div class="fields"><div class="field"><label>Date</label><input type="date" value="${esc(r.date)}" onchange="updateField(${r.id},'date',this.value)"></div><div class="field"><label>Montant TTC (€)</label><input inputmode="decimal" type="number" step="0.01" value="${esc(r.montant)}" onchange="updateField(${r.id},'montant',this.value)"></div><div class="field full"><label>Lieu / motif</label><input type="text" value="${esc(r.lieu)}" onchange="updateField(${r.id},'lieu',this.value)"></div><div class="field full"><label>Catégorie Excel</label><select onchange="updateField(${r.id},'categorie',this.value)">${CATEGORIES.map(c=>`<option ${c.label===r.categorie?'selected':''}>${c.label}</option>`).join('')}</select></div></div>${r.confiance?`<div class="confidence ${esc(r.confiance)}">Confiance IA : ${esc(r.confiance)}${r.confiance==='basse'?' — vérification indispensable':''}</div>`:''}${r.status==='error'?`<div class="actions"><button class="small" onclick="retry(${r.id})">Relancer la lecture</button></div>`:''}</div></div>`).join('');const total=receipts.reduce((s,r)=>s+(Number(r.montant)||0),0);$('total').textContent=total.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';const inc=receipts.filter(r=>!r.date||!r.lieu||r.montant===''||isNaN(Number(r.montant))).length;$('banner').innerHTML=inc?`<div class="banner warn">${inc} ligne(s) à compléter avant l'export.</div>`:(receipts.length?'<div class="banner okbanner">Toutes les lignes sont complètes. Vérifie-les puis exporte.</div>':'');}
-async function updateField(id,field,value){const r=receipts.find(x=>x.id===id);if(!r)return;r[field]=field==='montant'?(value===''?'':Number(value)):value;if(field==='date'&&r.lieu&&/^SE \d+ - /.test(r.lieu)){r.lieu=r.lieu.replace(/^SE \d+ - /,`SE ${isoWeek(value)} - `);}await dbPut(r);render();}
-async function removeReceipt(id){const idx=receipts.findIndex(x=>x.id===id);if(idx<0)return;const [r]=receipts.splice(idx,1);if(r.previewUrl)URL.revokeObjectURL(r.previewUrl);await dbDelete(id);render();}
+function statusLabel(r){if(r.status==='analyzing')return`Lecture OCR… ${r.progress||0}%`;return{pending:'En attente',done:'Lu — à vérifier',error:'À compléter'}[r.status]||r.status;}
+function render(){const box=$('receipts');$('counter').textContent=`${receipts.length} / ${MAX_RECEIPTS}`;if(!receipts.length)box.innerHTML='<div class="empty">Aucun justificatif pour l\'instant.</div>';else box.innerHTML=receipts.map((r,i)=>`<div class="receipt"><div class="leftcol"><div class="stamp">${i+1}</div>${r.previewUrl?`<img class="thumb" src="${r.previewUrl}">`:'<div class="thumb" style="display:flex;align-items:center;justify-content:center;font-size:25px">✓</div>'}</div><div><div class="receipt-top"><span class="status ${r.status}">${statusLabel(r)}</span><button class="ghost small danger" onclick="removeReceipt(${r.id})">Supprimer</button></div>${r.error?`<div class="error-text">${esc(r.error)}</div>`:''}<div class="fields"><div class="field"><label>Date</label><input type="date" value="${esc(r.date)}" onchange="updateField(${r.id},'date',this.value)"></div><div class="field"><label>Montant TTC (€)</label><input inputmode="decimal" type="number" step="0.01" value="${esc(r.montant)}" onchange="updateField(${r.id},'montant',this.value)"></div><div class="field full"><label>Type de dépense</label><select onchange="updateNature(${r.id},this.value)">${NATURES.map(n=>`<option value="${n.value}" ${n.value===r.nature?'selected':''}>${n.label}</option>`).join('')}</select></div><div class="field full"><label>Lieu / motif Excel</label><input type="text" value="${esc(r.lieu)}" onchange="updateField(${r.id},'lieu',this.value)"></div><div class="field full"><label>Catégorie Excel</label><select onchange="updateField(${r.id},'categorie',this.value)">${CATEGORIES.map(c=>`<option ${c.label===r.categorie?'selected':''}>${c.label}</option>`).join('')}</select></div></div>${r.confiance?`<div class="confidence ${esc(r.confiance)}">Confiance lecture : ${esc(r.confiance)}${r.confiance==='basse'?' — vérification indispensable':''}</div>`:''}${r.ocrText?`<details style="margin-top:7px"><summary class="hint">Voir le texte lu</summary><pre style="white-space:pre-wrap;font-size:10px;color:var(--soft);max-height:130px;overflow:auto">${esc(r.ocrText)}</pre></details>`:''}${r.status==='error'&&r.file?`<div class="actions"><button class="small" onclick="retry(${r.id})">Relancer la lecture</button></div>`:''}</div></div>`).join('');const total=receipts.reduce((s,r)=>s+(Number(r.montant)||0),0);$('total').textContent=total.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';const inc=receipts.filter(r=>!r.date||!r.lieu||r.montant===''||isNaN(Number(r.montant))).length;$('banner').innerHTML=inc?`<div class="banner warn">${inc} ligne(s) à compléter ou vérifier avant l'export.</div>`:(receipts.length?'<div class="banner okbanner">Toutes les lignes sont complètes. Vérifie-les puis exporte.</div>':'');}
+function updateField(id,field,value){const r=receipts.find(x=>x.id===id);if(!r)return;r[field]=field==='montant'?(value===''?'':Number(value)):value;if(field==='date'&&r.nature)r.lieu=makeMotif(r.nature,r.date,r.etablissement);render();}
+function updateNature(id,nature){const r=receipts.find(x=>x.id===id);if(!r)return;r.nature=nature;r.categorie=categoryForNature(nature);r.lieu=makeMotif(nature,r.date,r.etablissement);render();}
+function removeReceipt(id){const idx=receipts.findIndex(x=>x.id===id);if(idx<0)return;releasePhoto(receipts[idx]);receipts.splice(idx,1);render();}
 function retry(id){const r=receipts.find(x=>x.id===id);if(r)analyzeReceipt(r);}
 
 function setCell(ws,addr,value,type){const old=ws[addr]||{};const cell={...old};delete cell.f;delete cell.w;cell.v=value;cell.t=type||((typeof value==='number')?'n':'s');ws[addr]=cell;}
@@ -119,7 +144,7 @@ function safeBase(){return`NoteDeFrais_${$('meta-mois').value}${$('meta-annee').
 async function exportExcel(){if(!receipts.length){alert('Ajoutez au moins un justificatif.');return;}const inc=receipts.filter(r=>!r.date||!r.lieu||r.montant===''||isNaN(Number(r.montant)));if(inc.length&&!confirm(`${inc.length} ligne(s) sont incomplètes. Exporter quand même ?`))return;const btn=$('export-excel');const oldText=btn.textContent;btn.disabled=true;btn.textContent='Création Excel…';try{const wb=await buildWorkbook();const xlsx=XLSX.write(wb,{bookType:'xlsx',type:'array',cellStyles:true});const blob=new Blob([xlsx],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});downloadBlob(blob,safeBase()+'.xlsx');}catch(e){console.error('EXPORT EXCEL',e);alert(`Export Excel impossible : ${e.message||e}\n\nVérifie que le fichier "modele-note-frais.xlsx" est bien à la racine du dépôt GitHub, à côté de index.html.`);}finally{btn.disabled=false;btn.textContent=oldText;}}
 function downloadBlob(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),10000);}
 
-(async function init(){loadMeta();try{await openDb();const saved=await dbLoad();receipts=saved.sort((a,b)=>a.id-b.id).map(r=>({...r,previewUrl:URL.createObjectURL(r.file)}));seq=receipts.reduce((m,r)=>Math.max(m,r.id),0);}catch(e){console.warn('IndexedDB indisponible',e);}render();if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{});})();
+loadMeta();render();if('serviceWorker'in navigator)navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
 </script>
 </body>
 </html>
