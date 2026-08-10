@@ -198,6 +198,19 @@ async function buildWorkbook(){
    ws.getCell(`A${row}`).value=row-7;
    for(const c of 'BCDEFGHIJKLMNO')ws.getCell(`${c}${row}`).value=null;
  }
+ // V6.1 — réapplique explicitement le quadrillage du tableau pour éviter
+ // la perte visuelle de bordures lors de la réécriture XLSX sur iPhone.
+ const tableBorder={
+   top:{style:'thin',color:{argb:'FF000000'}},
+   left:{style:'thin',color:{argb:'FF000000'}},
+   bottom:{style:'thin',color:{argb:'FF000000'}},
+   right:{style:'thin',color:{argb:'FF000000'}}
+ };
+ for(let row=8;row<=38;row++){
+   for(let col=1;col<=15;col++){
+     ws.getCell(row,col).border=tableBorder;
+   }
+ }
  receipts.forEach((r,i)=>{
    const row=8+i;
    if(r.date){const d=new Date(r.date+'T12:00:00');const cell=ws.getCell(`B${row}`);cell.value=d;cell.numFmt='dd/mm/yyyy';}
@@ -234,6 +247,14 @@ async function buildWorkbookFallback(){
  for(let row=8;row<=37;row++){
    setCell('A'+row,row-7,'n');
    for(const c of 'BCDEFGHIJKLMNO')blankCell(c+row);
+ }
+ // V6.1 — même garde-fou sur le moteur XLSX de secours.
+ const thinSide={style:'thin',color:{rgb:'000000'}};
+ for(let row=8;row<=38;row++){
+   for(const c of 'ABCDEFGHIJKLMNO'){
+     const addr=c+row,old=ws[addr]||{t:'s',v:''};
+     ws[addr]={...old,s:{...(old.s||{}),border:{top:thinSide,bottom:thinSide,left:thinSide,right:thinSide}}};
+   }
  }
  receipts.forEach((r,i)=>{
    const row=8+i;
